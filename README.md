@@ -29,6 +29,8 @@ If you choose not to use conda, ensure that **all packages listed in ******``***
 pip install PyAstronomy pysme-astro
 ```
 
+---
+
 ### 4. Install this package
 
 From the root directory of this repository, run:
