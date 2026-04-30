@@ -17,7 +17,7 @@ mamba create -f environment.yaml
 mamba activate <environment_name>
 ```
 
-If you choose not to use conda, ensure that **all packages listed in environment.yaml** are installed by other means**, as they are required dependencies.
+If you choose not to use conda, ensure that **all packages listed in environment.yaml** are installed by other means, as they are required dependencies.
 
 ### 3. Install pip packages
 
