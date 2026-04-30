@@ -8,8 +8,6 @@ It is recommended to use Miniforge for managing your Python environment:
 
 https://conda-forge.org/download/
 
----
-
 ### 2. Create and activate the environment
 
 Use the provided environment file. You can edit it to include more packages or change the environment name.
@@ -21,15 +19,11 @@ mamba activate <environment_name>
 
 If you choose not to use conda, ensure that **all packages listed in ******``****** are installed by other means**, as they are required dependencies.
 
----
-
 ### 3. Install pip packages
 
 ```bash
 pip install PyAstronomy pysme-astro
 ```
-
----
 
 ### 4. Install this package
 
