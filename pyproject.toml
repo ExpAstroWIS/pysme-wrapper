@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pysme-wrapper"
+version = "0.1.0"
+description = "A wrapper over PySME to help you prepare spectral segments for MCMC fitting."
+readme = "README.md"
+authors = [{ name = "Param Rekhi" }]
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mypackage = ["linelist_solar_0.001_1.1_400-800nm]
