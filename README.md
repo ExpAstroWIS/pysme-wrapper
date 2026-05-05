@@ -35,7 +35,7 @@ This installs the package in editable mode, so any changes to the source code ar
 
 ## Tutorial
 
-For the typical workflow used with pymse-wrapper, see the pysme_wrapper_test.ipynb notebook.
+For the typical workflow used with pymse-wrapper, see the `pysme_wrapper_tutorial.ipynb` notebook.
 
 ## PySME documentation
 
