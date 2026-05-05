@@ -1,0 +1,14 @@
+name: pysme
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.9
+  - numpy
+  - scipy
+  - astropy
+  - pandas
+  - tqdm
+  - emcee 
+  - pip
+  - matplotlib
+  - corner
