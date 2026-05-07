@@ -24,6 +24,11 @@ from scipy.interpolate import make_smoothing_spline, make_interp_spline
 # import logging
 # logging.basicConfig(level=logging.ERROR)
 
+def _objarray(iterable):
+    arr = np.empty(len(iterable), dtype=object)
+    arr[:] = iterable
+    return arr
+
 class SMEwrapper(SME_Structure):
     def __init__(self, fulllinelist=vald, teff=5777, logg=4.44, monh=0.0, vsini=0, vmic=1.1, vmac=0):
         '''
@@ -170,7 +175,7 @@ class SMEwrapper(SME_Structure):
         if return_transmission: return model.y
 
     # endregion
-    
+
     # region fitting segments
     def make_fit_segments(self, wave_ranges=None, RES=None, RV='fit', CS='fit', ERR='fit', linelist=None, make_quality_cuts=True, return_copy=False, fit_RV_kwargs={}, err_cs_kwargs={}):
         '''
@@ -238,9 +243,9 @@ class SMEwrapper(SME_Structure):
         obj.RV = RV
 
         # Build primary arrays
-        obj.CSEG = np.array([inranges(obj.obswave*(1-obj.RV[i]/299792.5), ran).nonzero()[0] for i,ran in enumerate(obj.WRAN)],'O')
-        obj.WAVE = np.array([obj.obswave[c]*(1-obj.RV[i]/299792.5) for i,c in enumerate(obj.CSEG)], 'O')
-        obj.FLUX = np.array([obj.obsflux[c] for c in obj.CSEG], 'O')
+        obj.CSEG = _objarray([inranges(obj.obswave*(1-obj.RV[i]/299792.5), ran).nonzero()[0] for i,ran in enumerate(obj.WRAN)])
+        obj.WAVE = _objarray([obj.obswave[c]*(1-obj.RV[i]/299792.5) for i,c in enumerate(obj.CSEG)])
+        obj.FLUX = _objarray([obj.obsflux[c] for c in obj.CSEG])
 
         # CS and ERR
         if (isinstance(CS, str) and CS=='fit') or (isinstance(ERR, str) and ERR=='fit'):
@@ -249,17 +254,17 @@ class SMEwrapper(SME_Structure):
         if CS is None: CS = np.ones(obj.NSEG)
         elif isinstance(CS, str) and CS=='fit': CS = _CS
         elif isinstance(CS, (int, float, np.number)): CS = np.full(obj.NSEG, CS)
-        elif len(CS)==obj.NSEG: CS = np.array(CS,'O')
+        elif len(CS)==obj.NSEG: CS = _objarray(CS)
         else: raise ValueError('Length of input CS array does not match the number of segments.')
         obj.CS = CS
         #---
         if ERR is None: pass
         elif isinstance(ERR, str):
             if ERR=='fit': ERR = _ERR
-            elif ERR=='propagate': ERR = np.array([obj.obserr[c] for c in obj.CSEG],'O')
+            elif ERR=='propagate': ERR = _objarray([obj.obserr[c] for c in obj.CSEG])
             elif ERR=='none': ERR = None
             else: raise ValueError('Invalid string input for ERR. Should be one of "fit", "propagate" or "none".')
-        elif len(ERR)==obj.NSEG: ERR = np.array(ERR,'O')
+        elif len(ERR)==obj.NSEG: ERR = _objarray(ERR)
         else: raise ValueError('Length of input ERR array does not match the number of segments.')
         obj.ERR = ERR
 
@@ -352,9 +357,9 @@ class SMEwrapper(SME_Structure):
         if len(RES)==1: RES = np.tile(RES, len(wave_ranges))
         if ERR is not None and len(ERR)!=len(wave_ranges): raise ValueError('Input ERR array does not match the number of new segments.')
 
-        CSEG = np.array([inranges(obj.obswave*(1-RV[i]/299792.5), ran).nonzero()[0] for i,ran in enumerate(wave_ranges)],'O')
-        WAVE = np.array([obj.obswave[c]*(1-RV[i]/299792.5) for i,c in enumerate(CSEG)])
-        FLUX = np.array([obj.obsflux[c] for c in CSEG])
+        CSEG = _objarray([inranges(obj.obswave*(1-RV[i]/299792.5), ran).nonzero()[0] for i,ran in enumerate(wave_ranges)])
+        WAVE = _objarray([obj.obswave[c]*(1-RV[i]/299792.5) for i,c in enumerate(CSEG)])
+        FLUX = _objarray([obj.obsflux[c] for c in CSEG])
 
         insidx = np.searchsorted(obj.WRAN[:,0], wave_ranges[:,0])
         obj.WRAN = np.insert(obj.WRAN, insidx, wave_ranges, axis=0)
@@ -793,7 +798,7 @@ def create_mcmc_grid(sme, paramgrids, wave_ranges=None, delta_lambda=0.003, appr
     sme.linelist = sme.linelist[inranges(sme.linelist,wranpad)]
     sme.wave = np.arange(wranpad[0][0]-1, wranpad[-1][-1]+1, delta_lambda)
     cseg = [inranges(sme.wave[0], ran) for ran in wranpad]      
-    PWAVE = np.array([sme.wave[0][c] for c in cseg],'O')
+    PWAVE = _objarray([sme.wave[0][c] for c in cseg])
     syngrid = np.zeros([len(arr) for arr in paramgrids.values()]+[np.hstack(PWAVE).size], dtype=np.float16) 
     
     # Populate syngrid
@@ -920,7 +925,7 @@ class MCMCsetup:
         self.log_prior_function = log_prior_function
 
         if sme.CS.dtype==object:
-            self.CS = np.array([sme.CS[i](sme.WAVE[i]) for i in range(sme.NSEG)], dtype='O')
+            self.CS = _objarray([sme.CS[i](sme.WAVE[i]) for i in range(sme.NSEG)])
         else:
             self.CS = sme.CS.copy()
 
