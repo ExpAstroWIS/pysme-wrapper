@@ -35,11 +35,14 @@ class SMEwrapper(SME_Structure):
         Input parameters are self-explanatory.
         Option to input wave_ranges and resolution(s) is given here for the purpose of synthesizing spectra, not applicable for fitting.
         Iron abundance zero point is set to A(Fe)=7.38 by default, following the GALAH DR3 correction. You can change this by setting `self.abund['Fe']` to your preferred value after initializing the object.
+        NOTE: All the methods of SME_Structure _should_ also work with this class, but I haven't stress-tested them, so use those with caution and report any issues you find. 
 
-        Non-obvious Parameters
+        Parameters
         ----------
         fulllinelist : ValdFile or Linelist object, default provided
             Linelist object. See PySME documentation on how to get/build it. A Default linelist is provided encompassing all lines an FGK-type optical spectrum is typically likely to need, spanning 4000-8000 Å.
+
+        The others are self-explanatory stellar and broadening parameters.
         '''
         # Parent attributes
         super().__init__()
@@ -219,7 +222,7 @@ class SMEwrapper(SME_Structure):
         CS : Nx1 array
             The continuum scaling factor applied to each segment.
         CSEG : N arrays
-            The indices from `self.obswave` to build the each of the WAVE and FLUX arrays. 
+            The indices into `self.obswave` and `self.obsflux` to build the each of the WAVE and FLUX arrays. 
         '''
         if not hasattr(self, 'obswave') or not hasattr(self, 'obsflux') or self.obswave is None or self.obsflux is None:
             raise AttributeError('Observed spectrum not set. Please use the `input_observed_spectrum` method to input the observed spectrum before making fit segments.')
@@ -372,6 +375,42 @@ class SMEwrapper(SME_Structure):
         if obj.RES is not None: obj.RES = np.insert(obj.RES, insidx, RES)
         if return_copy:
             return obj
+        
+    def user_defined_segments(self, WAVE, FLUX, RES=None, RV=None, CS=None, ERR=None):
+        '''
+        Directly set the fit segments and their associated attributes. Use with caution, making sure the attributes are consistent with each other and with the input spectrum. 
+        This is for users who already have completely processed fit segments and just want to input them directly. Helpful for simulations.
+
+        Parameters
+        ----------  
+        WAVE : array-like of arrays
+            The observed wavelength grid of each segment, RV shifted to the rest frame of the star. 
+        FLUX : array-like of arrays
+            The observed flux values corresponding to the wavelength grid.
+        RES : array-like or float or None, optional
+            The intrumental resolution of each segment. If a single value is provided, it will be applied to all segments. If none, no resolution is set for any segment.
+        RV : array-like or float or None, optional
+            The radial velocity values of each segment from Earth. If a single value is provided, it will be applied to all segments. If None, sets RV to zero for all segments.
+        CS : array-like or float or None, optional
+            The continuum scaling factor applied to each segment. If a single value is provided, it will be applied to all segments. If None, sets CS to unity for all segments.
+        ERR : array-like or float or None, optional
+            The error values associated with `self.FLUX`. If a single value is provided, it will be applied to all segments. If None, no error values are set for any segment.
+        '''
+        if len(WAVE) != len(FLUX):
+            raise ValueError('Length of WAVE and FLUX arrays must match.')
+        try:
+            if not np.all([len(WAVE[i])==len(FLUX[i]) for i in range(len(WAVE))]):
+                raise ValueError('Length of WAVE and FLUX arrays must match.')
+        except TypeError:
+            raise ValueError('WAVE and FLUX must be array-like of arrays.')
+        self.CSEG = None
+        self.WAVE = _objarray(WAVE)
+        self.FLUX = _objarray(FLUX)
+        self.WRAN = np.array([[arr.min(), arr.max()] for arr in self.WAVE])
+        self.RV = np.array(RV).reshape(-1) if RV is not None else np.zeros(self.NSEG)
+        self.CS = np.array(CS).reshape(-1) if CS is not None else np.ones(self.NSEG)
+        self.ERR = np.array(ERR).reshape(-1) if ERR is not None else None
+        self.RES = np.array(RES).reshape(-1) if RES is not None else None
         
         
     def fit_RV(self, approx_resolution=None, wave_locations=None, window_size=40, linelist=None, segments='all', rot_broad_off=True, return_arrays=False):
@@ -617,7 +656,8 @@ def fast_synthesize(sme, wave_ranges, resolutions=None, delta_lambda=0.003, line
         start and end values for each wavelength segment. Here, they can be both unsorted and overlapping - handling that is infact an expected use case.
 
     resolutions : None or float or Nx1 array-like, default: None
-        Spectral resolution for each segment may be input here, if not given with the input spectrum. If None, no broadening is applied. If single value, assumes same resolution for all segments.
+        Spectral resolution for each segment. If None, no broadening is applied. If single value, assumes same resolution for all segments.
+        `sme.ipres` if pre-set is overwritten by this input. 
 
     delta_lambda : float, default: 0.003Å
         Delta wavelength for the synthesized grid in Å.
@@ -625,10 +665,6 @@ def fast_synthesize(sme, wave_ranges, resolutions=None, delta_lambda=0.003, line
     linelist : str or list, optional
         If you want to pass a custom linelist. Else uses `sme.fulllinelist` or `vald` as applicable.
         NOTE: Predefined `sme.linelist` is NOT directly used to ensure consistent behaviour. Custom linelists **must** be explicitly passed here.
-
-    # edgepad : 'auto' or 'none'/None or float, default: 'auto'
-    #     The amount of edge padding to apply to the wavelength ranges to account for convolution edge effects.
-    #     If 'auto', the padding is automatically determined based on the input wavelength ranges and resolutions. If 'none' or None, no edge padding is applied. If float, applies the given amount of edge padding in Å to all segments.
 
     normalize_by_continuum : bool, default: True
         Whether to continuum-normalize the synthesized spectrum.
@@ -647,6 +683,7 @@ def fast_synthesize(sme, wave_ranges, resolutions=None, delta_lambda=0.003, line
     wave_ranges = np.array(wave_ranges).reshape(-1,2)
     addbroadening = False
     edgepad = 0
+    sme.ipres = 0
     if resolutions is not None:
         resolutions = np.array(resolutions).reshape(-1)
         if len(resolutions)==1:
@@ -861,7 +898,7 @@ class MCMCsetup:
             If supplied dict doesn't have the `'syngrid'` key, a synthesized grid will be created using `create_mcmc_grid`.
             Notes:
                 1. Do NOT include `vsini` here. It will be ignored.
-                2. You can't fit for resolution. If you don't know the resolution, then may Param have mercy, mercy, on your soul. See what I did there! Param and param, mercy and mcmc... I'll see myself out.
+                2. You can't fit for resolution. If you don't know the resolution, then may Param have mercy, mercy, on your soul. See what I did there! Param and param, mercy and mcmc... ¬‿¬.
 
         vsini_grid : [vsini_min, vsini_max], optional
             If given, will be used to fit vsini. Only the min and max values matter for fitting this as vsini is treated as a convolution parameter during mcmc runs, not an interpolant parameter. Hence has the advantage of being computationally quite cheap.
@@ -871,8 +908,8 @@ class MCMCsetup:
             The number of processes (cpu cores) to use for parallel processing. If 1, no parallel processing is used.
 
         log_prior_function : callable, optional
-            Function of a vector of fitting parameters. The order of parameters in the vector should be the same as that in grids, vsini going at the end if applicable.
-            The built-in log-prior function prohibits values outside the parameter grids; this cannot be overrriden. 
+            Function of a vector of the fitting parameters. The order of parameters in the vector should be the same as that in grids, vsini going at the end if applicable.
+            The built-in prior prohibits values outside the parameter grids; this cannot be overrriden. 
 
         Returns
         -------
@@ -888,12 +925,13 @@ class MCMCsetup:
         # Checks & Basic Setup
         if len(sme.FLUX) == 0:
             raise ValueError("The SME structure has no fit segments defined.")
-        if sme.obswave is None or sme.obsflux is None:
-            raise ValueError("Observed spectrum not set in the SME structure. Please use the `input_observed_spectrum` method to input the observed spectrum before running MCMC.")
+        # Obs spectrum need not be input if fit segments are user-input...
+        # if sme.obswave is None or sme.obsflux is None:
+        #     raise ValueError("Observed spectrum not set in the SME structure. Please use the `input_observed_spectrum` method to input the observed spectrum before running MCMC.")
         if sme.NSEG != len(sme.FLUX):
-            raise ValueError("The number of fit segments in the SME structure does not match the number of wave ranges, probably because you overwrote the wave ranges after instancing the fit segments. You should just start over with a fresh SMEwrapper object.")
+            raise ValueError("The number of fit segments in the SME structure does not match the number of wave ranges, possibly because you overwrote the wave ranges after instancing the fit segments.")
         if sme.RES is None:
-            raise ValueError("Resolution MUST be by this stage. And make sure it is array-like that matches the number of segments if you're gonna do it this late.")
+            raise ValueError("Resolution MUST be set by this stage. And make sure it is array-like that matches the number of segments.")
         elif sme.RES is not None:
             sme.RES = np.array(sme.RES).reshape(-1)
             if len(sme.RES) != sme.NSEG:
@@ -1018,206 +1056,4 @@ class MCMCsetup:
                 sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_posterior, pool=pool)
                 sampler.run_mcmc(initial_vector, nsteps, progress=True)
         return sampler
-
-#--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-# def run_mcmc(sme, grids, vsini_grid=None, log_prior_function=None, nprocesses=1, nwalkers=None, nsteps=None, initial_vector=None, delta_lambda=0.003, derived_params={}, linelist=None, save_grids_to=None):
-#     '''
-#     At this point fit segments have already been created using `make_fit_segments` or directly in the `sme` object, along with all that is involved (RV, error computation and continuum scaling). 
-#     If you're using a pre-computed grid, the SME object given here can have any combination of wave_ranges that are a subset of the wave_ranges used to create the grid. This enables computation of a common grid for multiple spectra.
-    
-#     Parameters
-#     ----------
-#     sme : SMEwrapper object
-#         An initialized SMEwrapper object with the desired wave_ranges and fixed stellar parameters set.
-
-#     grids : Path-like or dict
-#         The grid(s) to be used for MCMC sampling.
-#         If a path-like object is given, it is assumed to be a path to a saved .npz grid file.
-#         If a dict is given, it is assumed to be a dictionary of parameter grids and, optionally, a wavegrid and synthesized grid (e.g., `{'teff': [5000, 5500, 6000], 'logg': [3.5, 4.0, 4.5], 'wavegrid':<size N array>, 'syngrid':<3x3xN array>}`). See PySME documentation for acceptable parameter names.
-#         If supplied dict doesn't have the `'syngrid'` key, a synthesized grid will be created using `create_mcmc_grid`.
-#         Notes:
-#             1. Do NOT include `vsini` here. It will be ignored.
-#             2. You can't fit for resolution. If you don't know the resolution, then may Param have mercy, mercy, on your soul. See what I did there! Param and param, mercy and mcmc... I'll see myself out.
-
-#     vsini_grid : [vsini_min, vsini_max], optional
-#         If given, will be used to fit vsini. Only the min and max values matter for fitting this as vsini is treated as a convolution parameter during mcmc runs, not an interpolant parameter. Hence has the advantage of being computationally quite cheap.
-#         If not given, vsini will not be fit for and will be fixed to the value set in `sme`.
-    
-#     log_prior_function : callable, optional
-#         Function of a vector of fitting parameters. The order of parameters in the vector should be the same as that in grids, vsini going at the end if applicable.
-#         The built-in log-prior function prohibits values outside the parameter grids; this cannot be overrriden. 
-
-#     nprocesses : int, default: 1 (No multiprocessing)
-#         The number of processes (cpu cores) to use for parallel processing. If 1, no parallel processing is used.  
-
-#     nwalkers : int, default: `8*nparams if 8*nparams < 64 else 64`
-#         Number of walkers to use in the MCMC sampling. If not given, will default to 8 times the number of parameters being fit, capped at 64.
-
-#     nsteps : int, default: 4500
-#         Number of steps to run the MCMC sampling. If not given, will default to 4500.
-
-#     initial_vector : array-like (nwalkers, nparams), optional
-#         Initial vector of parameters for the MCMC sampling. If not given, will default to a uniform distribution within the parameter grids. 
-#         If given, should be of shape (nwalkers, nparams) and the order of parameters along axis 1should be the same as that in grids; vsini going at the end if applicable.
-
-#     create_mcmc_grid Parameters
-#     --------------------------- 
-
-#     delta_lambda : float, default: 0.003Å
-#         Wavelength resolution for the synthesized grid in Å. Goes unused if a pre-computed grid is supplied. 
-
-#     derived_params : dict, optional
-#         Dict of param_name:function entries. If you want to tie any parameter to some combination of parameters in paramgrids (can't include `vsini` or `res` in any way).
-#         The function should be wriiten solely as a function of the `SME_Structure` object. Example: `function = lambda s: 1e-4*s.teff + 0.3*s.logg`.
-#         Special Case: If you want to use the empirical vmic relation from GALAH DR3 (see Buder et al. 2021), simply pass `vmic='galah'` and it will be set as a function of teff and logg according to the relation in that paper.
-#         Note: Goes unused if a pre-computed grid is supplied.
-
-#     linelist : ValdFile or Linelist, optional
-#         In case you want to pass a custom linelist at this stage for some reason. Otherwise will use the full linelist that is provided with this package.
-#         Goes unused if a pre-computed grid is supplied.
-#         Linelists are chopped to the wavelength ranges (plus some tolerance) input previously.
-
-#     save_grids_to : Path-like, optional
-#         If provided, the synthesized and parameter grids will be saved to this path in .npz format for future use. 
-
-#     Returns
-#     -------
-#     sampler : emcee.EnsembleSampler object
-#         The MCMC sampler object after running the sampling. The chains can be accessed via `sampler.chain` and the log-probability values via `sampler.lnprobability`.
-#         See emcee documentation for more details on the sampler object and how to analyze the chains.
-#         Example: `samples = sampler.get_chain(discard=750, thin=1, flat=True)  # remove burn-in and flatten the chains`
-#     '''
-#     # Checks & Basic Setup
-#     if len(sme.FLUX) == 0:
-#         raise ValueError("The SME structure has no fit segments defined.")
-#     if sme.obswave is None or sme.obsflux is None:
-#         raise ValueError("Observed spectrum not set in the SME structure. Please use the `input_observed_spectrum` method to input the observed spectrum before running MCMC.")
-#     if sme.NSEG != len(sme.FLUX):
-#         raise ValueError("The number of fit segments in the SME structure does not match the number of wave ranges, probably because you overwrote the wave ranges after instancing the fit segments. You should just start over with a fresh SMEwrapper object.")
-#     if sme.RES is None:
-#         raise ValueError("Resolution MUST be by this stage. And make sure it is array-like that matches the number of segments if you're gonna do it this late.")
-#     elif sme.RES is not None:
-#         sme.RES = np.array(sme.RES).reshape(-1)
-#         if len(sme.RES) != sme.NSEG:
-#             if len(sme.RES) == 1:
-#                 sme.RES = np.tile(sme.RES, sme.NSEG)
-#             else:
-#                 raise ValueError("Resolution array length does not match the number of segments.")
-#     if vsini_grid is not None and len(vsini_grid)!=2:
-#         raise ValueError("`vsini_grid` should be a list or array of [vsini_min, vsini_max]")
-#     if isinstance(grids, (str, bytes)) or hasattr(grids, '__fspath__'):
-#         with np.load(grids, allow_pickle=True) as data:
-#             grids = dict(data)
-#         if 'syngrid' not in grids or 'wavegrid' not in grids:
-#             raise ValueError("Loaded grid file does not contain 'syngrid' and/or 'wavegrid'. Please check the file.")
-#     if set(grids.keys()) & set(derived_params.keys()):
-#         raise ValueError("`grids` and `derived_params` share common keys. Parameters cannot be in both.")
-#     if 'syngrid' not in grids:
-#         if 'wavegrid' in grids:
-#             raise ValueError("`wavegrid` present in supplied grids but `syngrid` not found.")
-#         grids = create_mcmc_grid(sme, grids, delta_lambda=delta_lambda, derived_params=derived_params, nprocesses=nprocesses, linelist=linelist, return_grid=True, filename=save_grids_to)
-    
-#     if save_grids_to is not None:
-#         np.savez(save_grids_to, **grids)
-
-#     # Modifiers & Housekeeping       
-#     syngrid = grids.pop('syngrid')
-#     wavegrid = grids.pop('wavegrid')
-#     delta_lambda = wavegrid[0][1]-wavegrid[0][0] # AKA delta_lambda
-#     if 'vsini' in grids: del grids['vsini']
-#     paramgrids = grids
-#     # if 'vmic' in derived_params and derived_params['vmic']=='galah':
-#     #     derived_params['vmic'] = lambda s: calc_galah_vmic(s.teff,s.logg)
-#     # if sme.CS is None: sme.CS = np.ones(sme.NSEG)
-
-#     # Intialize
-#     sme.ipres = 0
-
-#     wvgridsts = np.array([arr[0] for arr in wavegrid])
-#     wvgridnds = np.array([arr[-1] for arr in wavegrid])
-#     ranindices = np.searchsorted(wvgridsts, sme.WRAN[:,0]) - 1
-#     if np.any(sme.WRAN[:,1] > wvgridnds):
-#         raise ValueError("The current wavelength ranges are not encompassed by the wavegrid. Please check the wavegrid and the fit segments.")
-#     gridlengths = np.array([len(arr) for arr in wavegrid])
-
-#     # Star Specific arrays
-#     obspec = np.hstack(sme.FLUX)
-#     if sme.ERR is None: specerr = 1
-#     else: specerr = np.hstack(sme.ERR) if sme.ERR.dtype==object else np.hstack(np.repeat(sme.ERR,[len(arr) for arr in sme.FLUX]))
-#     BINE = np.empty(sme.NSEG, dtype='O')
-#     for i in range(sme.NSEG):
-#         binw = np.diff(sme.WAVE[i])
-#         BINE[i] = np.zeros(len(sme.WAVE[i])+1)
-#         BINE[i][1:-1] = sme.WAVE[i][:-1]+binw/2
-#         BINE[i][0] = sme.WAVE[i][0]-binw[0]/2
-#         BINE[i][-1] = sme.WAVE[i][-1]+binw[-1]/2
-
-#     # Make Interpolant
-#     spint = RegularGridInterpolator(tuple(paramgrids.values()), syngrid, bounds_error=False, fill_value=0.0)
-
-#     # emcee functions
-#     def chisq_log_likelihood(params):
-#         if vsini_grid is not None:
-#             vsini = params[-1]
-#             params = params[:-1]
-#         else:
-#             vsini = sme.vsini
-#         supersyn = spint(params).squeeze()
-#         supersyn = np.split(supersyn, np.cumsum(gridlengths)[:-1])
-#         synspec = np.empty(sme.NSEG, dtype='O')
-#         for i, ig in enumerate(ranindices):
-#             synspec[i] = pyasl.fastRotBroad(wavegrid[ig], supersyn[ig], 0.81, vsini)
-#             synspec[i] = pyasl.instrBroadGaussFast(wavegrid[ig], synspec[i], sme.RES[i], 'firstlast', maxsig=5)
-#             # Rebinning by integrating the flux and then dividing by the bin widths to get average flux in each bin, which is more accurate than interpolating the flux onto the observed grid directly.
-#             I = np.zeros_like(synspec[i])
-#             I[1:] = np.cumsum(0.5 * (synspec[i][:-1] + synspec[i][1:])) * delta_lambda
-#             I_edges = np.interp(BINE[i], wavegrid[ig], I)
-#             synspec[i] = np.diff(I_edges)/np.diff(BINE[i]) 
-#             synspec[i] = synspec[i] * sme.CS[i] # Continuum scaling
-#         synspec = np.hstack(synspec)
-#         chisq = np.nansum(((synspec-obspec)/specerr)**2)
-#         return -0.5 * chisq
-    
-#     def log_prior(params):
-#         if vsini_grid is not None:
-#             vsini = params[-1]
-#             params = params[:-1]
-#             if not (vsini_grid[0] <= vsini < vsini_grid[1]):
-#                 return -np.inf
-#         for p, grid in zip(params, paramgrids.values()):
-#             if p < grid.min() or p > grid.max():
-#                 return -np.inf
-#         # User-defined priors
-#         if log_prior_function is not None:
-#             return log_prior_function(params)
-#         return 0
-    
-#     # Log-posterior = log-prior + log-likelihood
-#     def log_posterior(params):
-#         lp = log_prior(params)
-#         if not np.isfinite(lp):
-#             return -np.inf
-#         return lp + chisq_log_likelihood(params)
-    
-#     # Initialize and run the sampler
-#     ndim = len(paramgrids) + (1 if vsini_grid is not None else 0)
-#     if nwalkers is None:
-#         nwalkers = 8*ndim if 8*ndim < 64 else 64
-#     if nsteps is None:
-#         nsteps = 4500
-#     if initial_vector is None:
-#         initial_vector = np.random.uniform(low=[grid[0] for grid in paramgrids.values()] + ([vsini_grid[0]] if vsini_grid is not None else []), 
-#                                            high=[grid[-1] for grid in paramgrids.values()] + ([vsini_grid[1]] if vsini_grid is not None else []), 
-#                                            size=(nwalkers, ndim))
-#     if nprocesses <= 1:
-#         sampler = emcee.EnsembleSampler(nwalkers, ndim, log_posterior)
-#         sampler.run_mcmc(initial_vector, nsteps, progress=True)
-#     else: 
-#         with Pool(processes=nprocesses) as pool:
-#             sampler = emcee.EnsembleSampler(nwalkers, ndim, log_posterior, pool=pool)
-#             sampler.run_mcmc(initial_vector, nsteps, progress=True)
-
-#     return sampler
-# # endregion
-
+swaye shri ram
