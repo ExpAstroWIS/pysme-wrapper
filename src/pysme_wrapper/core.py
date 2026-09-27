@@ -212,7 +212,7 @@ class SMEwrapper(SME_Structure):
             If you want to pass a custom linelist. Else inherits from `self.fulllinelist`. 
         make_quality_cuts : bool, default: True
             Whether to make default quality cuts based on the fitted RV, ERR and CS values.
-            If True, segments with outlying RV values (more than 2σ deviation and more than 3 km/s from the mean RV), very high ERR values (more than 3σ above the mean ERR) or outlying mean-CS values (<0.8 or >1.2) will be removed. 
+            If True, segments with outlying RV values (more than 2σ deviation or more than 2 km/s from the mean RV), very high ERR values (more than 3σ above the mean ERR) or outlying mean-CS values (<0.8 or >1.2) will be removed. 
         return_copy : bool, default: False
             Whether to return a copy of the SMEwrapper object with the segments set instead of setting them to the current object.
 
@@ -228,7 +228,7 @@ class SMEwrapper(SME_Structure):
             The radial velocity values of each segment from Earth.
         ERR : Nx1 array or N arrays or None
             The error values associated with `self.FLUX`.
-        RES : Nx1 array or None
+        RES : Nx1 array or N arrays or None
             The intrumental resolution of each segment.
         CS : Nx1 array
             The continuum scaling factor applied to each segment.
@@ -246,6 +246,31 @@ class SMEwrapper(SME_Structure):
         obj.wran = None; obj.wave=None; obj.synth=None
         approx_resolution = np.mean(RES) if RES is not None else None
 
+        # Coverage check (observed frame, before any RV shift): every wave range needs actual data.
+        # A range is rejected if it has fewer than 2 observed points, more than 25% NaN flux, or a
+        # gap of more than 2 (locally estimated) pixels between the range edge and the nearest point.
+        problems = []
+        for i, ran in enumerate(obj.WRAN):
+            c = inranges(obj.obswave, ran)
+            wave_in, flux_in = obj.obswave[c], obj.obsflux[c]
+            if len(wave_in) < 2:
+                problems.append(f'{i:<5} {ran.round(4)!s:<20} only {len(wave_in)} observed point(s)')
+                continue
+            nan_frac = np.isnan(flux_in).mean()
+            if nan_frac > 0.25:
+                problems.append(f'{i:<5} {ran.round(4)!s:<20} {nan_frac*100:.0f}% NaN observed points (>25%)')
+                continue
+            dlam = np.diff(wave_in)
+            gap_lo, gap_hi = wave_in[0]-ran[0], ran[1]-wave_in[-1]
+            if gap_lo > 2*dlam[0]:
+                problems.append(f'{i:<5} {ran.round(4)!s:<20} starts {gap_lo:.4f} Å short of the range start (>2 px = {2*dlam[0]:.4f} Å)')
+            elif gap_hi > 2*dlam[-1]:
+                problems.append(f'{i:<5} {ran.round(4)!s:<20} ends {gap_hi:.4f} Å short of the range end (>2 px = {2*dlam[-1]:.4f} Å)')
+        if problems:
+            raise ValueError('The following wave ranges are not adequately covered by the observed spectrum '
+                              '(no/too few points, >25% NaN, or a gap at an edge):\n'
+                              f'{"iseg":<5} {"WAVE_RANGE":<20} reason\n' + '\n'.join(problems))
+
         # RV
         if isinstance(RV, str) and RV=='fit':
             RV = obj.fit_RV(approx_resolution=approx_resolution,linelist=linelist, **fit_RV_kwargs)
@@ -254,6 +279,7 @@ class SMEwrapper(SME_Structure):
         else:
             RV = np.array(RV).reshape(-1)
             if len(RV)==1: RV = np.full(obj.NSEG, RV)
+            elif len(RV)!=obj.NSEG: raise ValueError('Length of input RV array does not match the number of segments.')
         obj.RV = RV
 
         # Build primary arrays
@@ -266,7 +292,9 @@ class SMEwrapper(SME_Structure):
             _ERR, _CS = obj.get_error_and_cscale(obj.RV, approx_resolution, linelist=linelist, **err_cs_kwargs)
         #---
         if CS is None: CS = np.ones(obj.NSEG)
-        elif isinstance(CS, str) and CS=='fit': CS = _CS
+        elif isinstance(CS, str):
+            if CS=='fit': CS = _CS
+            else: raise ValueError('Invalid string input for CS. Only the string "fit" is allowed.')
         elif isinstance(CS, (int, float, np.number)): CS = np.full(obj.NSEG, CS)
         elif len(CS)==obj.NSEG: CS = _objarray(CS)
         else: raise ValueError('Length of input CS array does not match the number of segments.')
@@ -288,7 +316,7 @@ class SMEwrapper(SME_Structure):
             if RES is not None:
                 obj.RES = np.array(RES).reshape(-1)
             elif obj.obsres is not None:
-                obj.RES = np.array([obj.obsres[c].mean() for c in obj.CSEG])
+                obj.RES = _objarray([np.array(obj.obsres[c]) for c in obj.CSEG])
             else:
                 # At this point if RES is None, then raise error
                 raise TypeError('No resolution(s) input. If intentional, pass `RES=False` explicitly')
@@ -300,20 +328,21 @@ class SMEwrapper(SME_Structure):
 
         if make_quality_cuts:
             c1 = sigma_clip(obj.RV, sigma=2, maxiters=3).mask | (np.abs(obj.RV-obj.RV.mean()) > 2)
-            c2 = sigma_clip(obj.ERR, sigma_upper=3, sigma_lower=15, maxiters=3).mask if obj.ERR.dtype==float else np.zeros_like(c1, dtype=bool)
-            meanCS = np.hstack([spl(obj.WAVE[i].mean()) for i,spl in enumerate(obj.CS)]) if obj.CS.dtype==object else np.array([arr.mean() for arr in obj.CS])
+            c2 = sigma_clip(obj.ERR, sigma_upper=3, sigma_lower=15, maxiters=3).mask if (obj.ERR is not None) and (obj.ERR.dtype==float) else np.zeros_like(c1, dtype=bool)
+            meanCS = np.hstack([spl(obj.WAVE[i].mean()) for i,spl in enumerate(obj.CS)]) if isinstance(obj.CS[0], BSpline) else np.array([arr.mean() for arr in obj.CS])
             c3 = (meanCS<0.8) | (meanCS>1.2)
             icut = (c1 | c2 | c3).nonzero()[0]
             if len(icut):
-                print(f'The median fitted RV is {np.median(obj.RV[~(c1|c2|c3)]):.2f} km/s.')
-                if obj.ERR.dtype==float:
+                print(f'The median fitted RV is {np.median(obj.RV[~(c1|c2|c3)]):.2f} ± {np.std(obj.RV[~(c1|c2|c3)]):.2f} km/s.')
+                if (obj.ERR is not None) and (obj.ERR.dtype == float):
                     print(f'The median ERR is {np.nanmedian(obj.ERR[~(c1|c2|c3)]):.2f}.')
                 print(f'{len(icut)} segments will be removed due to poor fits to the RV, ERR and/or CS values. See function documentation for details.')
                 # Formatted to display aligned neatly in fixed-width font
                 print(f'{"iseg":<5} {"WAVE_RANGE":<20} {"RV":<8} {"ERR":<8} {"CS":<8} reason')
                 for iseg in icut:
                     reason = f'{"RV " if c1[iseg] else "   "}{"ERR " if c2[iseg] else "    "}{"CS" if c3[iseg] else "  "}'
-                    print(f'{iseg:<5} {obj.WRAN[iseg].round(2)!s:<20} {obj.RV[iseg]:<8.2f} {obj.ERR[iseg].mean().round(2)!s:<8} {meanCS[iseg]:<8.2f} {reason}')
+                    err_str = f'{obj.ERR[iseg].mean().round(2):.2f}' if obj.ERR is not None else 'None'
+                    print(f'{iseg:<5} {obj.WRAN[iseg].round(2)!s:<20} {obj.RV[iseg]:<8.2f} {err_str!s:<8} {meanCS[iseg]:<8.2f} {reason}')
             obj.delete_fit_segments(icut)
         if return_copy:
             return obj
@@ -770,7 +799,7 @@ def _disk_annuli(mu):
         r = np.array([0., 1.])
     return order, r, r[1:]**2 - r[:-1]**2
 
-def create_mcmc_grid(sme, paramgrids, wave_ranges=None, delta_v=0.15, approx_resolution=None, max_vbroad=30, derived_params={}, filename=None, nprocesses=1, linelist=None, return_grid=False, existing_grid=None, dtype=np.float16):
+def create_mcmc_grid(sme, paramgrids, wave_ranges=None, delta_v=0.25, approx_resolution=None, max_vbroad=30, derived_params={}, filename=None, nprocesses=1, linelist=None, return_grid=False, existing_grid=None, dtype=np.float16):
     '''
     Synthesizes and optionally saves to file the interpolant grid for subsequent mcmc runs. Recommended to save to file as this is the most time-consuming step and you don't wanna repeat it.
     `MCMCsetup` is able to use a subset of the wave_ranges used here, voiding the need to compute multiple grids for stars with similar parameter ranges but different wavelength ranges of interest.
@@ -796,7 +825,7 @@ def create_mcmc_grid(sme, paramgrids, wave_ranges=None, delta_v=0.15, approx_res
         If not given, will use the wave_ranges set with `make_fit_segments`. If those aren't set either, will throw an error.
 
     delta_v : float, default: 0.15 km/s
-        Velocity step of the log-spaced wavelength grid (0.0019 Å at 3800 Å, 0.0033 Å at 6600 Å). It must resolve the unbroadened line profiles and the smallest broadening you will fit.
+        Velocity step of the log-spaced wavelength grid (0.0032 Å at 3800 Å, 0.0055 Å at 6600 Å). It must resolve the unbroadened line profiles and the smallest broadening you will fit.
 
     approx_resolution : float, optional
         The lowest resolution of the spectra that will be fit with this grid. Only used to pad the wavelength windows against convolution edge effects.
@@ -997,6 +1026,7 @@ class MCMCsetup:
         At this point fit segments have already been created using `make_fit_segments` or directly in the `sme` object, along with all that is involved (RV, error computation and continuum scaling).
         If you're using a pre-computed grid, the SME object given here can have any combination of wave_ranges that are a subset of the wave_ranges used to create the grid. This enables computation of a common grid for multiple spectra.
         Everything star-specific (wavelength crop, instrumental profile, binning onto the observed pixels, continuum scaling, errors) is precomputed here, so `run_mcmc` only interpolates the grid and broadens.
+        NOTE: "pixel" throughout this class means one observed wavelength point of `sme.WAVE[i]`/`sme.FLUX[i]` (i.e. one row of your input spectrum), not a literal detector/CCD pixel.
 
         Parameters
         ----------
